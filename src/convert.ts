@@ -1,0 +1,155 @@
+import type Anthropic from '@anthropic-ai/sdk';
+import * as vscode from 'vscode';
+
+export type Block = Anthropic.TextBlockParam | Anthropic.ImageBlockParam;
+type Message = vscode.LanguageModelChatRequestMessage;
+type ImageType = Anthropic.Base64ImageSource['media_type'];
+
+// Copilot sends its system prompt with the proposed System role, which the stable typings lack.
+const SYSTEM_ROLE = 3 as vscode.LanguageModelChatMessageRole;
+const IMAGE_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const IMAGE_CHARS = 6000;
+const REPLAY_NOTE =
+  'This conversation started in an earlier session that has ended. Its transcript follows, with tool calls ' +
+  'and results shown as text for reference only. Continue from where it stops and call tools normally.';
+
+export interface ChatRequest {
+  system: string;
+  assistantCount: number;
+  /** Tool call ids and text of the last assistant message: what a live session must have produced last. */
+  lastCalls: string[];
+  lastText: string;
+  /** Results for those tool calls, when the request continues a tool round. */
+  results?: Map<string, Block[]>;
+  /** New user content after the last assistant message, otherwise. */
+  prompt: Block[];
+  /** Everything before the new content, replayed when no live session holds it. */
+  history: readonly Message[];
+}
+
+export function parseRequest(messages: readonly Message[]): ChatRequest {
+  const chat = messages.filter((message) => message.role !== SYSTEM_ROLE);
+  const last = chat.findLastIndex(isAssistant);
+  const { results, extra } = splitTail(chat.slice(last + 1));
+  const lastMessage = chat[last];
+  return {
+    system: messages.filter((message) => message.role === SYSTEM_ROLE).map(textOf).join('\n\n'),
+    assistantCount: chat.filter(isAssistant).length,
+    lastCalls: lastMessage ? callIds(lastMessage) : [],
+    lastText: lastMessage ? textOf(lastMessage) : '',
+    results: results.size > 0 ? withExtra(results, extra) : undefined,
+    prompt: results.size > 0 ? [] : extra,
+    history: chat.slice(0, last + 1),
+  };
+}
+
+/** The opening message of a new session: the replayed history, then the new content. */
+export function firstPrompt(request: ChatRequest): Block[] {
+  if (request.history.length === 0) return nonEmpty(request.prompt);
+  const replay: Block = { type: 'text', text: transcript(request.history, request.results) };
+  const next: Block[] = request.results ? [{ type: 'text', text: 'Continue from the tool results above.' }] : request.prompt;
+  return [replay, ...next];
+}
+
+export function nonEmpty(blocks: Block[]): Block[] {
+  return blocks.length > 0 ? blocks : [{ type: 'text', text: 'Continue.' }];
+}
+
+/** Rough size of what Claude reads, for token estimates. Images count as a fixed amount. */
+export function charsOf(message: Message): number {
+  return message.content.reduce<number>((chars, part) => chars + partChars(part), 0);
+}
+
+function partChars(part: unknown): number {
+  if (part instanceof vscode.LanguageModelTextPart) return part.value.length;
+  if (part instanceof vscode.LanguageModelToolCallPart) return part.name.length + JSON.stringify(part.input).length;
+  if (part instanceof vscode.LanguageModelToolResultPart) return part.content.reduce<number>((n, item) => n + partChars(item), 0);
+  return isImage(part) ? IMAGE_CHARS : 0;
+}
+
+function isAssistant(message: Message): boolean {
+  return message.role === vscode.LanguageModelChatMessageRole.Assistant;
+}
+
+function textOf(message: Message): string {
+  return message.content
+    .filter((part) => part instanceof vscode.LanguageModelTextPart)
+    .map((part) => part.value)
+    .join('');
+}
+
+function callIds(message: Message): string[] {
+  return message.content.filter((part) => part instanceof vscode.LanguageModelToolCallPart).map((part) => part.callId);
+}
+
+// Copilot sends one user message per tool result, sometimes followed by extra user text.
+function splitTail(tail: readonly Message[]): { results: Map<string, Block[]>; extra: Block[] } {
+  const results = new Map<string, Block[]>();
+  const extra: Block[] = [];
+  for (const part of tail.flatMap((message) => message.content)) {
+    if (part instanceof vscode.LanguageModelToolResultPart) results.set(part.callId, resultBlocks(part.content));
+    else pushBlock(extra, part);
+  }
+  return { results, extra };
+}
+
+// Extra text after tool results rides along with the last result.
+function withExtra(results: Map<string, Block[]>, extra: Block[]): Map<string, Block[]> {
+  const lastId = [...results.keys()].at(-1);
+  if (lastId && extra.length > 0) results.set(lastId, [...(results.get(lastId) ?? []), ...extra]);
+  return results;
+}
+
+function resultBlocks(content: readonly unknown[]): Block[] {
+  const blocks: Block[] = [];
+  for (const item of content) pushBlock(blocks, item instanceof vscode.LanguageModelPromptTsxPart ? toText(item.value) : item);
+  return blocks;
+}
+
+function toText(value: unknown): vscode.LanguageModelTextPart {
+  return new vscode.LanguageModelTextPart(typeof value === 'string' ? value : JSON.stringify(value));
+}
+
+function pushBlock(blocks: Block[], part: unknown): void {
+  const previous = blocks.at(-1);
+  if (part instanceof vscode.LanguageModelTextPart && previous?.type === 'text') previous.text += part.value;
+  else if (part instanceof vscode.LanguageModelTextPart) blocks.push({ type: 'text', text: part.value });
+  else if (isImage(part)) blocks.push(toImage(part));
+}
+
+function isImage(part: unknown): part is vscode.LanguageModelDataPart {
+  return part instanceof vscode.LanguageModelDataPart && IMAGE_TYPES.includes(part.mimeType);
+}
+
+function toImage(part: vscode.LanguageModelDataPart): Block {
+  const data = Buffer.from(part.data).toString('base64');
+  return { type: 'image', source: { type: 'base64', media_type: part.mimeType as ImageType, data } };
+}
+
+function transcript(history: readonly Message[], results?: Map<string, Block[]>): string {
+  const names = new Map<string, string>();
+  const turns = history.map((message) => renderTurn(message, names));
+  if (results) turns.push(`<user>\n${[...results].map(([id, blocks]) => renderResult(names.get(id), blocks)).join('\n')}\n</user>`);
+  return `<conversation_history>\n${REPLAY_NOTE}\n\n${turns.filter(Boolean).join('\n\n')}\n</conversation_history>`;
+}
+
+function renderTurn(message: Message, names: Map<string, string>): string {
+  const lines = message.content.map((part) => renderPart(part, names)).filter(Boolean);
+  const role = isAssistant(message) ? 'assistant' : 'user';
+  return lines.length > 0 ? `<${role}>\n${lines.join('\n')}\n</${role}>` : '';
+}
+
+function renderPart(part: unknown, names: Map<string, string>): string {
+  if (part instanceof vscode.LanguageModelTextPart) return part.value;
+  if (part instanceof vscode.LanguageModelToolCallPart) {
+    names.set(part.callId, part.name);
+    return `<tool_call name="${part.name}">${JSON.stringify(part.input)}</tool_call>`;
+  }
+  if (part instanceof vscode.LanguageModelToolResultPart) return renderResult(names.get(part.callId), resultBlocks(part.content));
+  return isImage(part) ? '[image]' : '';
+}
+
+function renderResult(name: string | undefined, blocks: Block[]): string {
+  const text = blocks.map((block) => (block.type === 'text' ? block.text : '[image]')).join('\n');
+  return `<tool_result name="${name ?? 'unknown'}">\n${text}\n</tool_result>`;
+}
