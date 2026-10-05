@@ -94,11 +94,25 @@ async function describeModels(session: Query, infos: ModelInfo[]): Promise<Catal
     const resolved = info.resolvedModel ?? info.value;
     if (info.value === 'default' || seen.has(resolved)) continue;
     seen.add(resolved);
-    await session.setModel(info.value);
-    const usage = await session.getContextUsage({ detail: 'summary' });
-    models.push({ info, contextWindow: usage.rawMaxTokens, compactAt: usage.autoCompactThreshold });
+    const model = await describeModel(session, info);
+    if (model) models.push(model);
   }
   return models;
+}
+
+// Claude Code may check a model with the API when switching to it, which can fail transiently.
+// Try twice, then leave that one model out rather than the whole catalog.
+async function describeModel(session: Query, info: ModelInfo): Promise<CatalogModel | undefined> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await session.setModel(info.value);
+      const usage = await session.getContextUsage({ detail: 'summary' });
+      return { info, contextWindow: usage.rawMaxTokens, compactAt: usage.autoCompactThreshold };
+    } catch {
+      // try again
+    }
+  }
+  return undefined;
 }
 
 /** A prompt stream that stays open between turns, so one process serves a whole conversation. */
