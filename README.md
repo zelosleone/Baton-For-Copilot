@@ -6,7 +6,7 @@ Use your own Claude Pro or Max plan in GitHub Copilot Chat. Requests go through 
 2. Pick a Claude model in the Copilot Chat model picker.
 3. Set its thinking effort right in the picker.
 
-Copilot keeps its own agent, tools, approvals and diffs; Claude is the model behind them. Each conversation runs in one Claude Code process that stays alive between turns, so tool rounds don't resend the conversation and prompt caching works. If the history no longer lines up (an edited message, summarization, a reload), a new process picks up from a replayed transcript.
+Copilot keeps its own agent, tools, approvals and diffs; Claude is the model behind them. Each conversation runs in one Claude Code process that stays alive between turns, so tool rounds don't resend the conversation and prompt caching works. If the history no longer lines up (an edited message, summarization, a reload), a new process picks up from a replayed transcript. A finished chat keeps its process for 10 minutes (two at most); a running agent keeps it until its chat, subagents included, has been silent for 30 minutes.
 
 Models, context windows and effort levels come live from Claude Code. **Claude Code: Manage** shows the signed-in account and plan usage, and can refresh models or open the logs.
 

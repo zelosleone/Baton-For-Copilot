@@ -21,12 +21,14 @@ import * as vscode from 'vscode';
 import { baseOptions, Inbox } from './claude.js';
 import { firstPrompt, nonEmpty, resultsWithPrompt, type Block, type ChatRequest } from './convert.js';
 
-// Finished conversations kept around for a follow-up. Mid-turn sessions never count toward this:
-// they are waiting on Copilot's tools, which include subagents and other parallel requests.
+// Quiet time is measured per chat: a chat stays active while any of its sessions (its subagents and
+// side requests included) is talking to Claude Code or Copilot.
+// Finished sessions kept around for a follow-up; mid-turn ones never count toward this.
 const MAX_IDLE_SESSIONS = 2;
+// A finished session goes once its chat has been inactive this long...
 const IDLE_MS = 10 * 60 * 1000;
-// A mid-turn session only goes after a long silence, so slow tools and subagents never cut it off.
-const AWAITING_MS = 30 * 60 * 1000;
+// ...anything else only after this long without any activity, so long agent runs are never cut off.
+const SILENT_MS = 30 * 60 * 1000;
 const RELIST_TIMEOUT_MS = 5000;
 const DEFAULT_SYSTEM = 'You are Claude, a helpful assistant running inside VS Code.';
 
@@ -78,7 +80,7 @@ export class Session {
   responses = 0;
   lastCalls: string[] = [];
   lastText = '';
-  lastUsed = Date.now();
+  lastActive = Date.now();
   private settings: SessionSettings;
   private readonly inbox = new Inbox<SDKUserMessage>();
   private readonly server = new McpServer({ name: 'vscode', version: '1.0.0' }, { capabilities: { tools: { listChanged: true } } });
@@ -137,7 +139,7 @@ export class Session {
 
   async resume(request: ChatRequest, settings: SessionSettings): Promise<void> {
     this.state = 'busy';
-    this.lastUsed = Date.now();
+    this.lastActive = Date.now();
     this.context.log.info(`${settings.model}: continuing with ${request.results ? 'tool results' : 'a new turn'}`);
     await this.apply(settings);
     if (request.results) this.deliver(resultsWithPrompt(request.results, request.prompt));
@@ -242,6 +244,7 @@ export class Session {
   private async next(): Promise<SDKMessage> {
     const result = await this.messages.next();
     if (result.done) throw new Error('Claude Code stopped before finishing the reply.');
+    this.lastActive = Date.now();
     return result.value;
   }
 
@@ -249,7 +252,7 @@ export class Session {
     this.responses++;
     this.lastCalls = reply.calls;
     this.lastText = reply.text;
-    this.lastUsed = Date.now();
+    this.lastActive = Date.now();
     this.state = reply.calls.length > 0 ? 'awaiting' : 'idle';
     if (this.oneShot) this.close();
   }
@@ -381,19 +384,30 @@ export class Sessions implements vscode.Disposable {
 
   private sweep(): void {
     const now = Date.now();
+    const chats = chatActivity(this.sessions);
     let idle = 0;
     for (const session of this.sessions) {
       if (session.state === 'idle') idle++;
-      if (expired(session, now - session.lastUsed, idle)) session.close();
+      const quietMs = now - (chats.get(session.conversation) ?? session.lastActive);
+      if (expired(session.state, quietMs, idle)) session.close();
     }
     this.sessions = this.sessions.filter((session) => session.state !== 'closed');
   }
 }
 
-// Busy sessions are never closed here; idleRank counts finished sessions, most recent first.
-function expired(session: Session, quietMs: number, idleRank: number): boolean {
-  if (session.state === 'idle') return idleRank > MAX_IDLE_SESSIONS || quietMs > IDLE_MS;
-  return session.state === 'awaiting' && quietMs > AWAITING_MS;
+// Each chat's latest activity across its sessions; sessions without a chat id stand alone.
+function chatActivity(sessions: Session[]): Map<string | undefined, number> {
+  const chats = new Map<string | undefined, number>();
+  for (const { conversation, lastActive } of sessions) {
+    if (conversation) chats.set(conversation, Math.max(chats.get(conversation) ?? 0, lastActive));
+  }
+  return chats;
+}
+
+// idleRank counts finished sessions, most recent first.
+function expired(state: State, quietMs: number, idleRank: number): boolean {
+  if (state === 'idle') return idleRank > MAX_IDLE_SESSIONS || quietMs > IDLE_MS;
+  return state !== 'closed' && quietMs > SILENT_MS;
 }
 
 // A conversation that no longer lines up with a live process (edited, retried, summarized,

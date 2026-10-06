@@ -62,7 +62,7 @@ function claudeEnv(): Record<string, string | undefined> {
   delete env.CLAUDE_CODE_SSE_PORT;
   return {
     ...env,
-    CLAUDE_AGENT_SDK_CLIENT_APP: 'claude-code-for-copilot/0.1.0',
+    CLAUDE_AGENT_SDK_CLIENT_APP: 'claude-code-for-copilot',
     // Copilot's tools keep their own names instead of mcp__vscode__*.
     CLAUDE_AGENT_SDK_MCP_NO_PREFIX: '1',
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',

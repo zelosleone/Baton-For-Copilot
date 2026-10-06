@@ -2,7 +2,7 @@
   "name": "claude-code-for-copilot",
   "displayName": "Claude Code: Copilot Provider",
   "description": "Use your own Claude Pro or Max subscription in GitHub Copilot Chat, through the Claude Code CLI on your machine.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "publisher": "DenizhanDaklr",
   "license": "MIT",
