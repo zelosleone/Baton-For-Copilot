@@ -23,12 +23,14 @@ import { firstPrompt, nonEmpty, resultsWithPrompt, type Block, type ChatRequest 
 
 // Quiet time is measured per chat: a chat stays active while any of its sessions (its subagents and
 // side requests included) is talking to Claude Code or Copilot.
-// Finished sessions kept around for a follow-up; mid-turn ones never count toward this.
+// Finished sessions kept around for a follow-up, closed once their chat has been quiet for 10 minutes.
 const MAX_IDLE_SESSIONS = 2;
-// A finished session goes once its chat has been inactive this long...
 const IDLE_MS = 10 * 60 * 1000;
-// ...anything else only after this long without any activity, so long agent runs are never cut off.
-const SILENT_MS = 30 * 60 * 1000;
+// Nothing mid-turn is ever timed out: a reply can think for as long as it needs, and a tool call or
+// subagent can take any time. Mid-turn sessions whose chat has gone silent for 30 minutes are most
+// likely left over from a stopped turn, so only those are capped, keeping the two most recent.
+const PARKED_MS = 30 * 60 * 1000;
+const MAX_PARKED_SESSIONS = 2;
 const RELIST_TIMEOUT_MS = 5000;
 const DEFAULT_SYSTEM = 'You are Claude, a helpful assistant running inside VS Code.';
 
@@ -386,10 +388,12 @@ export class Sessions implements vscode.Disposable {
     const now = Date.now();
     const chats = chatActivity(this.sessions);
     let idle = 0;
+    let parked = 0;
     for (const session of this.sessions) {
-      if (session.state === 'idle') idle++;
       const quietMs = now - (chats.get(session.conversation) ?? session.lastActive);
-      if (expired(session.state, quietMs, idle)) session.close();
+      if (session.state === 'idle') idle++;
+      if (session.state === 'awaiting' && quietMs > PARKED_MS) parked++;
+      if (expired(session.state, quietMs, idle, parked)) session.close();
     }
     this.sessions = this.sessions.filter((session) => session.state !== 'closed');
   }
@@ -404,10 +408,10 @@ function chatActivity(sessions: Session[]): Map<string | undefined, number> {
   return chats;
 }
 
-// idleRank counts finished sessions, most recent first.
-function expired(state: State, quietMs: number, idleRank: number): boolean {
+// Ranks count finished and parked sessions, most recent first. Busy sessions are never closed here.
+function expired(state: State, quietMs: number, idleRank: number, parkedRank: number): boolean {
   if (state === 'idle') return idleRank > MAX_IDLE_SESSIONS || quietMs > IDLE_MS;
-  return state !== 'closed' && quietMs > SILENT_MS;
+  return state === 'awaiting' && quietMs > PARKED_MS && parkedRank > MAX_PARKED_SESSIONS;
 }
 
 // A conversation that no longer lines up with a live process (edited, retried, summarized,
