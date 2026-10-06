@@ -1,19 +1,19 @@
 {
-  "name": "claude-code-for-copilot",
-  "displayName": "Claude Code: Copilot Provider",
-  "description": "Use your own Claude Pro or Max subscription in GitHub Copilot Chat, through the Claude Code CLI on your machine.",
-  "version": "0.1.2",
+  "name": "baton-for-copilot",
+  "displayName": "Baton: Copilot Provider",
+  "description": "Use your own Claude Pro or Max plan in GitHub Copilot Chat. Baton runs Claude Code on your machine, signed in with your own account.",
+  "version": "0.2.0",
   "type": "module",
   "publisher": "DenizhanDaklr",
   "license": "MIT",
   "icon": "images/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zelosleone/Claude-Code-For-Copilot"
+    "url": "https://github.com/zelosleone/Baton-For-Copilot"
   },
-  "homepage": "https://github.com/zelosleone/Claude-Code-For-Copilot#readme",
+  "homepage": "https://github.com/zelosleone/Baton-For-Copilot#readme",
   "bugs": {
-    "url": "https://github.com/zelosleone/Claude-Code-For-Copilot/issues"
+    "url": "https://github.com/zelosleone/Baton-For-Copilot/issues"
   },
   "engines": {
     "vscode": "^1.118.0"
@@ -25,8 +25,9 @@
   "keywords": [
     "claude",
     "claude code",
-    "anthropic",
-    "copilot"
+    "copilot",
+    "chat",
+    "subscription"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -39,19 +40,19 @@
   "contributes": {
     "languageModelChatProviders": [
       {
-        "vendor": "claude-code",
-        "displayName": "Claude Code",
-        "managementCommand": "claudeCode.manage"
+        "vendor": "baton",
+        "displayName": "Baton",
+        "managementCommand": "baton.manage"
       }
     ],
     "commands": [
       {
-        "command": "claudeCode.manage",
-        "title": "Claude Code: Manage"
+        "command": "baton.manage",
+        "title": "Baton: Manage"
       },
       {
-        "command": "claudeCode.signIn",
-        "title": "Claude Code: Sign In"
+        "command": "baton.signIn",
+        "title": "Baton: Sign In to Claude Code"
       }
     ]
   },

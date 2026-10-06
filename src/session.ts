@@ -33,6 +33,8 @@ const PARKED_MS = 30 * 60 * 1000;
 const MAX_PARKED_SESSIONS = 2;
 const RELIST_TIMEOUT_MS = 5000;
 const DEFAULT_SYSTEM = 'You are Claude, a helpful assistant running inside VS Code.';
+// Copilot's tool that runs a subagent: a nested conversation with the same chat id and its own system prompt.
+const SUBAGENT_TOOL = 'runSubagent';
 
 type StreamEvent = Extract<SDKMessage, { type: 'stream_event' }>['event'];
 type ContentBlock = Extract<StreamEvent, { type: 'content_block_start' }>['content_block'];
@@ -81,6 +83,8 @@ export class Session {
   state: State = 'busy';
   responses = 0;
   lastCalls: string[] = [];
+  /** Copilot's tools behind lastCalls. */
+  lastTools: string[] = [];
   lastText = '';
   lastActive = Date.now();
   private settings: SessionSettings;
@@ -123,6 +127,15 @@ export class Session {
 
   get conversation(): string | undefined {
     return this.context.conversation;
+  }
+
+  get system(): string {
+    return this.context.system;
+  }
+
+  /** Whether this session's turn is waiting on a subagent Copilot is running for it. */
+  awaitsSubagent(): boolean {
+    return this.state === 'awaiting' && this.lastTools.includes(SUBAGENT_TOOL);
   }
 
   /** Whether this process already holds everything in the request except its new tail. */
@@ -253,6 +266,7 @@ export class Session {
   private settle(reply: Reply): void {
     this.responses++;
     this.lastCalls = reply.calls;
+    this.lastTools = reply.tools;
     this.lastText = reply.text;
     this.lastActive = Date.now();
     this.state = reply.calls.length > 0 ? 'awaiting' : 'idle';
@@ -264,6 +278,7 @@ export class Session {
 class Reply {
   text = '';
   readonly calls: string[] = [];
+  readonly tools: string[] = [];
   done = false;
   usage?: Usage;
   private kind?: SDKAssistantMessageError;
@@ -272,7 +287,7 @@ class Reply {
 
   constructor(
     private readonly progress: Progress,
-    private readonly tools: ReadonlySet<string>,
+    private readonly copilotTools: ReadonlySet<string>,
     private readonly onRateLimit: (info: SDKRateLimitInfo) => void,
   ) {}
 
@@ -321,8 +336,9 @@ class Reply {
     if (!block) return;
     this.blocks.delete(index);
     const name = block.name.replace(/^mcp__vscode__/, '');
-    if (!this.tools.has(name)) return;
+    if (!this.copilotTools.has(name)) return;
     this.calls.push(block.id);
+    this.tools.push(name);
     this.progress.report(new vscode.LanguageModelToolCallPart(block.id, name, parseInput(block.json)));
   }
 
@@ -352,7 +368,7 @@ class Reply {
   }
 }
 
-/** Live conversations, most recent first. Each holds a Claude Code process (~250 MB), so keep few. */
+/** Live conversations, most recent first. Each holds a Claude Code process (~180 MB), so keep few. */
 export class Sessions implements vscode.Disposable {
   private sessions: Session[] = [];
   private readonly timer = setInterval(() => this.sweep(), 60_000);
@@ -376,6 +392,16 @@ export class Sessions implements vscode.Disposable {
       throw error;
     }
     return session;
+  }
+
+  /**
+   * A subagent's process goes as soon as it has answered: nothing ever follows up on it, and its chat
+   * is the one waiting on it. Without this it would hold its ~180 MB until it aged out.
+   */
+  finished(session: Session): void {
+    if (session.state !== 'idle' || session.conversation === undefined) return;
+    const parent = this.sessions.find((other) => other.conversation === session.conversation && other.system !== session.system && other.awaitsSubagent());
+    if (parent) session.close();
   }
 
   dispose(): void {

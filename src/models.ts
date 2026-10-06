@@ -28,7 +28,7 @@ function toClaudeModel({ info, contextWindow, compactAt }: CatalogModel): Claude
     // A claude-* family gets Copilot's Claude-tuned prompts and edit tools.
     family: resolved,
     version: resolved,
-    detail: 'Claude Code',
+    detail: 'via Claude Code',
     tooltip: info.description,
     maxInputTokens,
     maxOutputTokens: contextWindow - maxInputTokens,

@@ -2,13 +2,14 @@ import type { AccountInfo, SDKRateLimitInfo } from '@anthropic-ai/claude-agent-s
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
-import { findClaude, INSTALL_URL, isSignedIn, openSignIn, probe } from './claude.js';
+import { findClaude, INSTALL_URL, isSignedIn, openSignIn, probe, type ModelWindow } from './claude.js';
 import { charsOf, parseRequest } from './convert.js';
 import { pickEffort, toClaudeModels, type ClaudeModel } from './models.js';
 import { ClaudeError, Sessions, type Usage } from './session.js';
 
-const MODELS_KEY = 'claudeCode.models';
-const CHARS_PER_TOKEN_KEY = 'claudeCode.charsPerToken';
+const MODELS_KEY = 'baton.models';
+const WINDOWS_KEY = 'baton.windows';
+const CHARS_PER_TOKEN_KEY = 'baton.charsPerToken';
 const WINDOW_LABELS: Record<string, string> = { five_hour: '5-hour', seven_day: 'Weekly' };
 
 type Options = vscode.ProvideLanguageModelChatResponseOptions & {
@@ -64,6 +65,7 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
     try {
       const session = await this.sessions.open(request, settings, context);
       this.calibrate(requestChars(messages, tools), await session.respond(progress, token));
+      this.sessions.finished(session);
     } catch (error) {
       if (!token.isCancellationRequested) throw this.explain(error);
     }
@@ -75,8 +77,9 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
     return Math.max(1, Math.round(chars / this.charsPerToken));
   }
 
-  refresh(): Promise<void> {
-    this.refreshing ??= this.load().finally(() => (this.refreshing = undefined));
+  /** `recheck` also reads every model's context window again. */
+  refresh(recheck = false): Promise<void> {
+    this.refreshing ??= this.load(recheck).finally(() => (this.refreshing = undefined));
     return this.refreshing;
   }
 
@@ -111,11 +114,12 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
     this.changed.dispose();
   }
 
-  private async load(): Promise<void> {
+  private async load(recheck: boolean): Promise<void> {
     const exe = findClaude();
     if (!exe) return this.setModels([]);
     try {
-      const catalog = await probe(exe);
+      const catalog = await probe(exe, this.state.get<Record<string, ModelWindow>>(WINDOWS_KEY, {}), recheck);
+      void this.state.update(WINDOWS_KEY, catalog.windows);
       this.account = catalog.account;
       this.setModels(isSignedIn(catalog.account) ? toClaudeModels(catalog.models) : []);
       this.log.info(`${this.describe()}: ${this.models.length} models`);
@@ -146,16 +150,14 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
       return error instanceof Error ? error : new Error(String(error));
     }
     void this.promptSetup();
-    return new Error('Claude Code is not signed in. Run "Claude Code: Sign In", then try again.');
+    return new Error('Claude Code is not signed in. Run "Baton: Sign In", then try again.');
   }
 
   private async promptSetup(): Promise<void> {
     if (this.prompting) return;
     this.prompting = true;
     const installed = Boolean(findClaude());
-    const message = installed
-      ? 'Sign in to Claude Code to use your Claude plan in Copilot Chat.'
-      : 'Claude Code for Copilot needs the Claude Code CLI on this machine.';
+    const message = installed ? 'Sign in to Claude Code to use your Claude plan in Copilot Chat.' : 'Baton runs Claude Code, which is not installed on this machine.';
     const choice = await vscode.window.showInformationMessage(message, installed ? 'Sign In' : 'Install Claude Code');
     this.prompting = false;
     if (choice) this.signIn();
