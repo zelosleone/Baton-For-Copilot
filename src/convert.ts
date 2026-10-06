@@ -9,6 +9,8 @@ type ImageType = Anthropic.Base64ImageSource['media_type'];
 const SYSTEM_ROLE = 3 as vscode.LanguageModelChatMessageRole;
 const IMAGE_TYPES: readonly string[] = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const IMAGE_CHARS = 6000;
+// Copilot's background compaction forks the agent prompt and appends a summary request after the tool results.
+const COMPACTION_MARKERS = ['compacted', '<summary>'];
 const REPLAY_NOTE =
   'This conversation started in an earlier session that has ended. Its transcript follows, with tool calls ' +
   'and results shown as text for reference only. Continue from where it stops and call tools normally.';
@@ -21,10 +23,12 @@ export interface ChatRequest {
   lastText: string;
   /** Results for those tool calls, when the request continues a tool round. */
   results?: Map<string, Block[]>;
-  /** New user content after the last assistant message, otherwise. */
+  /** New user content after the last assistant message (after the results, if any). */
   prompt: Block[];
   /** Everything before the new content, replayed when no live session holds it. */
   history: readonly Message[];
+  /** A side request (background compaction) that must not take over the live session it was forked from. */
+  fork: boolean;
 }
 
 export function parseRequest(messages: readonly Message[]): ChatRequest {
@@ -37,9 +41,10 @@ export function parseRequest(messages: readonly Message[]): ChatRequest {
     assistantCount: chat.filter(isAssistant).length,
     lastCalls: lastMessage ? callIds(lastMessage) : [],
     lastText: lastMessage ? textOf(lastMessage) : '',
-    results: results.size > 0 ? withExtra(results, extra) : undefined,
-    prompt: results.size > 0 ? [] : extra,
+    results: results.size > 0 ? results : undefined,
+    prompt: extra,
     history: chat.slice(0, last + 1),
+    fork: results.size > 0 && isCompaction(extra),
   };
 }
 
@@ -47,8 +52,14 @@ export function parseRequest(messages: readonly Message[]): ChatRequest {
 export function firstPrompt(request: ChatRequest): Block[] {
   if (request.history.length === 0) return nonEmpty(request.prompt);
   const replay: Block = { type: 'text', text: transcript(request.history, request.results) };
-  const next: Block[] = request.results ? [{ type: 'text', text: 'Continue from the tool results above.' }] : request.prompt;
-  return [replay, ...next];
+  return [replay, ...nonEmpty(request.prompt)];
+}
+
+/** Tool results for a live session. Text Copilot added after them rides along with the last one. */
+export function resultsWithPrompt(results: Map<string, Block[]>, prompt: Block[]): Map<string, Block[]> {
+  const lastId = [...results.keys()].at(-1);
+  if (lastId && prompt.length > 0) results.set(lastId, [...(results.get(lastId) ?? []), ...prompt]);
+  return results;
 }
 
 export function nonEmpty(blocks: Block[]): Block[] {
@@ -93,11 +104,9 @@ function splitTail(tail: readonly Message[]): { results: Map<string, Block[]>; e
   return { results, extra };
 }
 
-// Extra text after tool results rides along with the last result.
-function withExtra(results: Map<string, Block[]>, extra: Block[]): Map<string, Block[]> {
-  const lastId = [...results.keys()].at(-1);
-  if (lastId && extra.length > 0) results.set(lastId, [...(results.get(lastId) ?? []), ...extra]);
-  return results;
+function isCompaction(extra: Block[]): boolean {
+  const text = extra.map((block) => (block.type === 'text' ? block.text : '')).join('');
+  return COMPACTION_MARKERS.every((marker) => text.includes(marker));
 }
 
 function resultBlocks(content: readonly unknown[]): Block[] {

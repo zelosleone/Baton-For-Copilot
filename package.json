@@ -6,6 +6,7 @@
   "type": "module",
   "publisher": "DenizhanDaklr",
   "license": "MIT",
+  "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.118.0"
   },

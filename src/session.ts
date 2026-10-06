@@ -19,10 +19,14 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import * as vscode from 'vscode';
 import { baseOptions, Inbox } from './claude.js';
-import { firstPrompt, nonEmpty, type Block, type ChatRequest } from './convert.js';
+import { firstPrompt, nonEmpty, resultsWithPrompt, type Block, type ChatRequest } from './convert.js';
 
-const MAX_SESSIONS = 3;
-const IDLE_MS = 20 * 60 * 1000;
+// Finished conversations kept around for a follow-up. Mid-turn sessions never count toward this:
+// they are waiting on Copilot's tools, which include subagents and other parallel requests.
+const MAX_IDLE_SESSIONS = 2;
+const IDLE_MS = 10 * 60 * 1000;
+// A mid-turn session only goes after a long silence, so slow tools and subagents never cut it off.
+const AWAITING_MS = 30 * 60 * 1000;
 const RELIST_TIMEOUT_MS = 5000;
 const DEFAULT_SYSTEM = 'You are Claude, a helpful assistant running inside VS Code.';
 
@@ -83,6 +87,7 @@ export class Session {
   private readonly waiting = new Map<string, (result: CallToolResult) => void>();
   private readonly ready = new Map<string, CallToolResult>();
   private relisted?: () => void;
+  private oneShot = false;
 
   constructor(
     private readonly context: SessionContext,
@@ -118,13 +123,15 @@ export class Session {
 
   /** Whether this process already holds everything in the request except its new tail. */
   continues(request: ChatRequest, conversation: string | undefined): boolean {
-    if (!this.sameChat(request, conversation)) return false;
+    if (request.fork || !this.sameChat(request, conversation)) return false;
     return request.results ? this.awaits(request) : this.idleAfter(request);
   }
 
   start(request: ChatRequest): void {
     // A replayed history already holds this many replies, so the next request counts on from here.
     this.responses = request.assistantCount;
+    // Nothing ever follows up on a side request, so its process goes as soon as it has answered.
+    this.oneShot = request.fork;
     this.send(firstPrompt(request));
   }
 
@@ -133,7 +140,7 @@ export class Session {
     this.lastUsed = Date.now();
     this.context.log.info(`${settings.model}: continuing with ${request.results ? 'tool results' : 'a new turn'}`);
     await this.apply(settings);
-    if (request.results) this.deliver(request.results);
+    if (request.results) this.deliver(resultsWithPrompt(request.results, request.prompt));
     else this.send(nonEmpty(request.prompt));
   }
 
@@ -244,6 +251,7 @@ export class Session {
     this.lastText = reply.text;
     this.lastUsed = Date.now();
     this.state = reply.calls.length > 0 ? 'awaiting' : 'idle';
+    if (this.oneShot) this.close();
   }
 }
 
@@ -339,7 +347,7 @@ class Reply {
   }
 }
 
-/** Live conversations, most recent first. Each holds a Claude Code process, so keep few. */
+/** Live conversations, most recent first. Each holds a Claude Code process (~250 MB), so keep few. */
 export class Sessions implements vscode.Disposable {
   private sessions: Session[] = [];
   private readonly timer = setInterval(() => this.sweep(), 60_000);
@@ -372,18 +380,27 @@ export class Sessions implements vscode.Disposable {
   }
 
   private sweep(): void {
-    const cutoff = Date.now() - IDLE_MS;
-    this.sessions.forEach((session, index) => {
-      if (session.state !== 'busy' && (index >= MAX_SESSIONS || session.lastUsed < cutoff)) session.close();
-    });
+    const now = Date.now();
+    let idle = 0;
+    for (const session of this.sessions) {
+      if (session.state === 'idle') idle++;
+      if (expired(session, now - session.lastUsed, idle)) session.close();
+    }
     this.sessions = this.sessions.filter((session) => session.state !== 'closed');
   }
+}
+
+// Busy sessions are never closed here; idleRank counts finished sessions, most recent first.
+function expired(session: Session, quietMs: number, idleRank: number): boolean {
+  if (session.state === 'idle') return idleRank > MAX_IDLE_SESSIONS || quietMs > IDLE_MS;
+  return session.state === 'awaiting' && quietMs > AWAITING_MS;
 }
 
 // A conversation that no longer lines up with a live process (edited, retried, summarized,
 // or after a reload) starts over in a new one; stale ones age out of the pool.
 function create(request: ChatRequest, settings: SessionSettings, context: SessionContext): Session {
-  context.log.info(`${settings.model}: new session, replaying ${request.history.length} earlier messages`);
+  const kind = request.fork ? 'one-off session for background compaction' : 'session';
+  context.log.info(`${settings.model}: new ${kind}, replaying ${request.history.length} earlier messages`);
   const session = new Session(context, settings);
   session.start(request);
   return session;
