@@ -22,4 +22,6 @@ npx -y knip       # unused files, exports and dependencies
 npm run package   # builds the .vsix
 ```
 
+Every push to `main` runs the same checks in GitHub Actions and attaches the `.vsix` to the release for the version in `package.json`. Bump the version to keep the previous build as its own release.
+
 Unofficial, not affiliated with Anthropic. Claude and Claude Code are trademarks of Anthropic.
