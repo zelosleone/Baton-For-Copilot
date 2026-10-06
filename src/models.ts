@@ -21,10 +21,11 @@ function toClaudeModel({ info, contextWindow, compactAt }: CatalogModel): Claude
   const resolved = info.resolvedModel ?? info.value;
   // Copilot's BYOK convention is window minus output reservation; Claude Code keeps the
   // same headroom before it compacts, so its threshold is the prompt budget.
-  const maxInputTokens = Math.min(contextWindow, compactAt ?? Math.round(contextWindow * 0.9));
+  const budget = compactAt !== undefined && compactAt > 0 ? compactAt : Math.round(contextWindow * 0.9);
+  const maxInputTokens = Math.min(contextWindow, budget);
   return {
     id: info.value,
-    name: `Claude ${info.displayName}`,
+    name: `Claude ${info.displayName || info.value}`,
     // A claude-* family gets Copilot's Claude-tuned prompts and edit tools.
     family: resolved,
     version: resolved,

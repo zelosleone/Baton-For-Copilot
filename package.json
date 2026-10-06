@@ -2,7 +2,7 @@
   "name": "baton-for-copilot",
   "displayName": "Baton: Copilot Provider",
   "description": "Use your own Claude Pro or Max plan in GitHub Copilot Chat. Baton runs Claude Code on your machine, signed in with your own account.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "publisher": "DenizhanDaklr",
   "license": "MIT",
@@ -60,7 +60,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./ && node build.mjs",
     "lint": "eslint src",
-    "package": "vsce package"
+    "package": "vsce package",
+    "upstream": "node build.mjs upstream && node out/upstream.mjs"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.289",

@@ -2,7 +2,7 @@ import type { AccountInfo, SDKRateLimitInfo } from '@anthropic-ai/claude-agent-s
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
-import { findClaude, INSTALL_URL, isSignedIn, openSignIn, probe, type ModelWindow } from './claude.js';
+import { findClaude, INSTALL_URL, isSignedIn, probe, type ModelWindow } from './claude.js';
 import { charsOf, parseRequest } from './convert.js';
 import { pickEffort, toClaudeModels, type ClaudeModel } from './models.js';
 import { ClaudeError, Sessions, type Usage } from './session.js';
@@ -183,6 +183,13 @@ function configuredEffort(options: Options): string | undefined {
 function conversationId(options: Options): string | undefined {
   const id: unknown = options.modelOptions?._conversationId;
   return typeof id === 'string' ? id : undefined;
+}
+
+/** Opens Anthropic's own sign-in flow in a terminal. Credentials never pass through this extension. */
+function openSignIn(exe: string): vscode.Terminal {
+  const terminal = vscode.window.createTerminal({ name: 'Claude Code sign-in', shellPath: exe, shellArgs: ['auth', 'login'] });
+  terminal.show();
+  return terminal;
 }
 
 function requestChars(messages: readonly vscode.LanguageModelChatRequestMessage[], tools: readonly vscode.LanguageModelChatTool[]): number {

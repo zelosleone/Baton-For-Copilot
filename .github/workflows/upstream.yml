@@ -1,0 +1,28 @@
+name: Upstream
+
+# Every day, Baton's own model check against the newest Claude Code, signed out. A failure means a
+# Claude Code release changed something Baton relies on; GitHub emails it to the repository owner.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  claude-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Newest Claude Code
+        run: |
+          npm pack @anthropic-ai/claude-agent-sdk-linux-x64@latest --silent
+          mkdir claude && tar -xzf anthropic-ai-claude-agent-sdk-linux-x64-*.tgz -C claude
+          chmod +x claude/package/claude
+          claude/package/claude --version
+          echo "CLAUDE_EXE=$PWD/claude/package/claude" >> "$GITHUB_ENV"
+      - run: npm run upstream

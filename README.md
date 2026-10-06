@@ -25,6 +25,7 @@ npm run compile   # type check + esbuild bundle
 npm run lint      # includes a complexity cap of 8
 npx -y knip       # unused files, exports and dependencies
 npm run package   # builds the .vsix
+npm run upstream  # checks a Claude Code binary (CLAUDE_EXE) signed out; CI runs it daily on the newest release
 ```
 
 Unofficial, not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic.

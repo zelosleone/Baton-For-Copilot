@@ -2,6 +2,7 @@ import {
   query,
   type EffortLevel,
   type Query,
+  type SDKAssistantMessage,
   type SDKAssistantMessageError,
   type SDKMessage,
   type SDKRateLimitInfo,
@@ -284,6 +285,7 @@ class Reply {
   private kind?: SDKAssistantMessageError;
   private stopReason?: string | null;
   private readonly blocks = new Map<number, { id: string; name: string; json: string }>();
+  private readonly streamed = new Set<string>();
 
   constructor(
     private readonly progress: Progress,
@@ -293,7 +295,7 @@ class Reply {
 
   handle(message: SDKMessage): void {
     if (message.type === 'stream_event' && message.parent_tool_use_id === null) this.onEvent(message.event);
-    else if (message.type === 'assistant') this.kind = message.error ?? this.kind;
+    else if (message.type === 'assistant') this.onAssistant(message);
     else if (message.type === 'rate_limit_event') this.onRateLimit(message.rate_limit_info);
     else if (message.type === 'result') this.onResult(message);
   }
@@ -301,6 +303,7 @@ class Reply {
   private onEvent(event: StreamEvent): void {
     switch (event.type) {
       case 'message_start':
+        this.streamed.add(event.message.id);
         return this.addUsage(event.message.usage);
       case 'message_delta':
         this.stopReason = event.delta.stop_reason;
@@ -322,24 +325,50 @@ class Reply {
 
   private onDelta(index: number, delta: Delta): void {
     if (delta.type === 'text_delta') {
-      this.text += delta.text;
-      this.progress.report(new vscode.LanguageModelTextPart(delta.text));
+      this.addText(delta.text);
     } else if (delta.type === 'input_json_delta') {
       const block = this.blocks.get(index);
       if (block) block.json += delta.partial_json;
     }
   }
 
-  // Only Copilot's tools go back to Copilot; Claude Code answers anything else itself.
   private endBlock(index: number): void {
     const block = this.blocks.get(index);
     if (!block) return;
     this.blocks.delete(index);
-    const name = block.name.replace(/^mcp__vscode__/, '');
+    this.addCall(block.id, block.name, parseInput(block.json));
+  }
+
+  // Claude Code falls back to a plain request when streaming fails: a message that never came as a
+  // stream is replayed from its content. Error notices are left to the turn's result.
+  private onAssistant(message: SDKAssistantMessage): void {
+    this.kind = message.error ?? this.kind;
+    if (!this.replayable(message)) return;
+    this.addUsage(message.message.usage);
+    for (const block of message.message.content) {
+      if (block.type === 'text') this.addText(block.text);
+      else if (block.type === 'tool_use') this.addCall(block.id, block.name, block.input);
+    }
+    // Such a message has no stop reason, and Claude Code runs its tool right away: Copilot needs it now.
+    if (this.calls.length > 0) this.finish();
+  }
+
+  private replayable({ error, parent_tool_use_id, message }: SDKAssistantMessage): boolean {
+    return !error && parent_tool_use_id === null && message.model !== '<synthetic>' && !this.streamed.has(message.id);
+  }
+
+  private addText(text: string): void {
+    this.text += text;
+    this.progress.report(new vscode.LanguageModelTextPart(text));
+  }
+
+  // Only Copilot's tools go back to Copilot; Claude Code answers anything else itself.
+  private addCall(id: string, toolName: string, input: unknown): void {
+    const name = toolName.replace(/^mcp__vscode__/, '');
     if (!this.copilotTools.has(name)) return;
-    this.calls.push(block.id);
+    this.calls.push(id);
     this.tools.push(name);
-    this.progress.report(new vscode.LanguageModelToolCallPart(block.id, name, parseInput(block.json)));
+    this.progress.report(new vscode.LanguageModelToolCallPart(id, name, typeof input === 'object' && input !== null ? input : {}));
   }
 
   private endMessage(): void {

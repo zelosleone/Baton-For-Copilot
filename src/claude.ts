@@ -9,11 +9,12 @@ import {
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import * as vscode from 'vscode';
 
 export const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
 // A model's context window is checked again after a week, or when the user refreshes the models.
 const WINDOW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// The usual Claude window, for when Claude Code won't say; such models are checked again next time.
+const FALLBACK_WINDOW = 200_000;
 
 export interface ModelWindow {
   contextWindow: number;
@@ -40,13 +41,6 @@ export function findClaude(): string | undefined {
 export function isSignedIn(account: AccountInfo): boolean {
   const thirdParty = (account.apiProvider ?? 'firstParty') !== 'firstParty';
   return thirdParty || Boolean(account.email || account.subscriptionType || account.apiKeySource);
-}
-
-/** Opens Anthropic's own sign-in flow in a terminal. Credentials never pass through this extension. */
-export function openSignIn(exe: string): vscode.Terminal {
-  const terminal = vscode.window.createTerminal({ name: 'Claude Code sign-in', shellPath: exe, shellArgs: ['auth', 'login'] });
-  terminal.show();
-  return terminal;
 }
 
 /** Options every Claude Code process gets: no built-in tools, settings, memory or saved transcripts. */
@@ -97,9 +91,12 @@ export async function probe(exe: string, windows: Readonly<Record<string, ModelW
   }
 }
 
-// 'default' only points at another row, and aliases can share a model; keep each model once.
+// 'default' only points at another row, and aliases can share a model; keep each model once. One
+// model failing its check is that model (not on this plan, say); all of them failing is the check
+// itself, and then every model stays, with the usual window.
 async function describeModels(session: Query, infos: ModelInfo[], known: Readonly<Record<string, ModelWindow>>): Promise<CatalogModel[]> {
   const models: CatalogModel[] = [];
+  const unchecked: ModelInfo[] = [];
   const seen = new Set<string>();
   for (const info of infos) {
     const resolved = resolvedId(info);
@@ -107,8 +104,9 @@ async function describeModels(session: Query, infos: ModelInfo[], known: Readonl
     seen.add(resolved);
     const window = fresh(known[resolved]) ?? (await describeModel(session, info));
     if (window) models.push({ info, ...window });
+    else unchecked.push(info);
   }
-  return models;
+  return models.length > 0 ? models : unchecked.map((info) => ({ info, contextWindow: FALLBACK_WINDOW, checkedAt: 0 }));
 }
 
 // Claude Code may check a model with the API when switching to it, which can fail transiently.
@@ -118,7 +116,7 @@ async function describeModel(session: Query, info: ModelInfo): Promise<ModelWind
     try {
       await session.setModel(info.value);
       const usage = await session.getContextUsage({ detail: 'summary' });
-      return { contextWindow: usage.rawMaxTokens, compactAt: usage.autoCompactThreshold, checkedAt: Date.now() };
+      if (usage.rawMaxTokens > 0) return { contextWindow: usage.rawMaxTokens, compactAt: usage.autoCompactThreshold, checkedAt: Date.now() };
     } catch {
       // try again
     }
