@@ -2,7 +2,7 @@ import type { AccountInfo, SDKRateLimitInfo } from '@anthropic-ai/claude-agent-s
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
-import { findClaude, INSTALL_URL, isSignedIn, probe, type ModelWindow } from './claude.js';
+import { findClaude, INSTALL_URL, isSignedIn, probe, updateClaude, updatesOff, type ModelWindow } from './claude.js';
 import { charsOf, parseRequest } from './convert.js';
 import { pickEffort, toClaudeModels, type ClaudeModel } from './models.js';
 import { ClaudeError, Sessions, type Usage } from './session.js';
@@ -10,6 +10,12 @@ import { ClaudeError, Sessions, type Usage } from './session.js';
 const MODELS_KEY = 'baton.models';
 const WINDOWS_KEY = 'baton.windows';
 const CHARS_PER_TOKEN_KEY = 'baton.charsPerToken';
+// When Claude Code's updater last ran, shared by every window.
+const UPDATED_KEY = 'baton.updateCheckedAt';
+const UPDATE_EVERY_MS = 6 * 60 * 60 * 1000;
+// Models are also read again every few hours: a plan can gain models without a new version.
+const REREAD_MS = 6 * 60 * 60 * 1000;
+const CHECK_EVERY_MS = 60 * 60 * 1000;
 const WINDOW_LABELS: Record<string, string> = { five_hour: '5-hour', seven_day: 'Weekly' };
 
 type Options = vscode.ProvideLanguageModelChatResponseOptions & {
@@ -31,6 +37,9 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
   private account?: AccountInfo;
   private limits?: SDKRateLimitInfo;
   private refreshing?: Promise<void>;
+  private updating?: Promise<void>;
+  private readAt = 0;
+  private readonly timer = setInterval(() => void this.keepCurrent(), CHECK_EVERY_MS);
   private prompting = false;
 
   constructor(
@@ -83,6 +92,15 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
     return this.refreshing;
   }
 
+  /**
+   * Keeps Claude Code current as it does itself in a terminal: its own updater runs every few hours,
+   * unless the user turned Claude Code's updates off. The models are read again after an update.
+   */
+  keepCurrent(): Promise<void> {
+    this.updating ??= this.update().finally(() => (this.updating = undefined));
+    return this.updating;
+  }
+
   signIn(): void {
     const exe = findClaude();
     if (!exe) return void vscode.env.openExternal(vscode.Uri.parse(INSTALL_URL));
@@ -110,8 +128,30 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
   }
 
   dispose(): void {
+    clearInterval(this.timer);
     this.sessions.dispose();
     this.changed.dispose();
+  }
+
+  private async update(): Promise<void> {
+    const updated = await this.updateClaude();
+    if (updated || Date.now() - this.readAt >= REREAD_MS) await this.refresh();
+  }
+
+  private async updateClaude(): Promise<boolean> {
+    const exe = findClaude();
+    const due = Date.now() - this.state.get<number>(UPDATED_KEY, 0) >= UPDATE_EVERY_MS;
+    if (!exe || !due || updatesOff()) return false;
+    await this.state.update(UPDATED_KEY, Date.now());
+    try {
+      const { from, to } = await updateClaude(exe);
+      if (from === to) return false;
+      this.log.info(`Claude Code updated itself from ${from} to ${to}; reading its models again.`);
+      return true;
+    } catch (error) {
+      this.log.warn(`Claude Code's updater failed: ${String(error)}`);
+      return false;
+    }
   }
 
   private async load(recheck: boolean): Promise<void> {
@@ -121,6 +161,7 @@ export class ClaudeChatProvider implements vscode.LanguageModelChatProvider<Clau
       const catalog = await probe(exe, this.state.get<Record<string, ModelWindow>>(WINDOWS_KEY, {}), recheck);
       void this.state.update(WINDOWS_KEY, catalog.windows);
       this.account = catalog.account;
+      this.readAt = Date.now();
       this.setModels(isSignedIn(catalog.account) ? toClaudeModels(catalog.models) : []);
       this.log.info(`${this.describe()}: ${this.models.length} models`);
     } catch (error) {

@@ -6,15 +6,28 @@ import {
   type Query,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk/core';
-import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { promisify } from 'node:util';
 
 export const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
 // A model's context window is checked again after a week, or when the user refreshes the models.
 const WINDOW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // The usual Claude window, for when Claude Code won't say; such models are checked again next time.
 const FALLBACK_WINDOW = 200_000;
+const run = promisify(execFile);
+// The updater downloads the whole of Claude Code (about 250 MB).
+const UPDATE_TIMEOUT_MS = 20 * 60 * 1000;
+// What turns off Claude Code's own background updates, in its environment or its settings' env block.
+const UPDATE_SWITCHES = ['DISABLE_UPDATES', 'DISABLE_AUTOUPDATER', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'];
+
+interface GlobalConfig {
+  autoUpdates?: boolean;
+  installMethod?: string;
+  autoUpdatesProtectedForNative?: boolean;
+}
 
 export interface ModelWindow {
   contextWindow: number;
@@ -36,6 +49,51 @@ export function findClaude(): string | undefined {
   const name = process.platform === 'win32' ? 'claude.exe' : 'claude';
   const dirs = [...(process.env.PATH ?? '').split(delimiter), join(homedir(), '.local', 'bin')];
   return dirs.filter(Boolean).map((dir) => join(dir, name)).find((file) => existsSync(file));
+}
+
+/** The version an executable reports, like "2.1.293". */
+async function claudeVersion(exe: string): Promise<string | undefined> {
+  const { stdout } = await run(exe, ['--version'], { timeout: 60_000, windowsHide: true }).catch(() => ({ stdout: '' }));
+  return /\d+\.\d+\.\d+/.exec(stdout)?.[0];
+}
+
+/**
+ * Runs Claude Code's own updater. In a terminal Claude Code updates itself in the background, but not
+ * when an editor runs it, as Baton does; and new models (a new Haiku, say) come with new versions.
+ */
+export async function updateClaude(exe: string): Promise<{ from?: string; to?: string }> {
+  const from = await claudeVersion(exe);
+  const update = run(exe, ['update'], { timeout: UPDATE_TIMEOUT_MS, windowsHide: true, env: claudeEnv() });
+  // Nothing answers a question it might ask.
+  update.child.stdin?.end();
+  await update;
+  return { from, to: await claudeVersion(exe) };
+}
+
+/** Claude Code's own rule for its background updates, which the user may have turned off. */
+export function updatesOff(): boolean {
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  const settings = readJson<{ env?: Record<string, string> }>(join(configDir ?? join(homedir(), '.claude'), 'settings.json'));
+  const env: Record<string, string | undefined> = { ...settings?.env, ...process.env };
+  return UPDATE_SWITCHES.some((name) => isOn(env[name])) || configOff(readJson<GlobalConfig>(join(configDir ?? homedir(), '.claude.json')));
+}
+
+// A legacy `autoUpdates: false` no longer counts once the native installer has protected it.
+function configOff(config: GlobalConfig | undefined): boolean {
+  if (config?.autoUpdates !== false) return false;
+  return config.installMethod !== 'native' || config.autoUpdatesProtectedForNative !== true;
+}
+
+function isOn(value: string | undefined): boolean {
+  return Boolean(value) && !['0', 'false', 'no', 'off'].includes(String(value).toLowerCase());
+}
+
+function readJson<T>(file: string): T | undefined {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 export function isSignedIn(account: AccountInfo): boolean {

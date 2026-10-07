@@ -2,7 +2,7 @@
   "name": "baton-for-copilot",
   "displayName": "Baton: Copilot Provider",
   "description": "Use your own Claude Pro or Max plan in GitHub Copilot Chat. Baton runs Claude Code on your machine, signed in with your own account.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "publisher": "DenizhanDaklr",
   "license": "MIT",

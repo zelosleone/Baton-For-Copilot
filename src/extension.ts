@@ -12,7 +12,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('baton.signIn', () => provider.signIn()),
     vscode.commands.registerCommand('baton.manage', () => manage(provider, log)),
   );
-  void provider.refresh();
+  void provider.refresh().then(() => provider.keepCurrent());
 }
 
 async function manage(provider: ClaudeChatProvider, log: vscode.LogOutputChannel): Promise<void> {

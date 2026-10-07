@@ -7,6 +7,8 @@ Use your own Claude Pro or Max plan in GitHub Copilot Chat. Baton runs Claude Co
 
 Copilot keeps its own agent, tools, approvals and diffs; Claude is the model behind them. Models, context windows and effort levels come from Claude Code. **Baton: Manage** shows your account and plan usage.
 
+New models come with new Claude Code versions. Claude Code updates itself when you run it in a terminal, but not when an editor runs it, so Baton runs Claude Code's own updater (`claude update`) every few hours and reads the models again. Claude Code's own switches turn this off: `DISABLE_AUTOUPDATER=1`, or `autoUpdates: false`.
+
 ## Fast and light
 
 - Each chat runs in one Claude Code process that stays alive between turns, so tool rounds don't resend the conversation and prompt caching works.
