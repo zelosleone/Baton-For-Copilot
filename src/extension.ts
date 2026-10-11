@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { scheduleLodestarNotice } from './lodestar.js';
 import { ClaudeChatProvider } from './provider.js';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -13,6 +14,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('baton.manage', () => manage(provider, log)),
   );
   void provider.refresh().then(() => provider.keepCurrent());
+  scheduleLodestarNotice(context);
 }
 
 async function manage(provider: ClaudeChatProvider, log: vscode.LogOutputChannel): Promise<void> {
