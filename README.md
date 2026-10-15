@@ -2,7 +2,7 @@
 
 Use your own Claude Pro or Max plan in GitHub Copilot Chat. Baton runs Claude Code, Anthropic's CLI, on your machine and puts its models in Copilot's model picker.
 
-> Also from the same developer: [Lodestar](https://marketplace.visualstudio.com/items?itemName=DenizhanDaklr.lodestar) walks you through how code works and reviews your changes, on any model in VS Code, including this extension's. $10, one time.
+> Also from the same developer: [Lodestar](https://marketplace.visualstudio.com/items?itemName=DenizhanDaklr.lodestar) walks you through how code works, explains anything you hover, and reviews your changes on any model in VS Code, including this extension's. 3 free runs included, then $5 one-time.
 
 1. Install [Claude Code](https://code.claude.com/docs/en/setup) and sign in: run `claude`, or **Baton: Sign In to Claude Code**.
 2. Pick a Claude model in the Copilot Chat model picker, and its thinking effort next to it.
